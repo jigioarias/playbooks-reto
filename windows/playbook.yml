@@ -1,0 +1,202 @@
+---
+# =============================================================================
+# Playbook: mantenimiento_windows.yml
+# Descripción: Valida espacio en disco (C:), verifica servicios críticos,
+#              realiza un healthcheck de la VM (CPU, memoria, uptime,
+#              reinicio pendiente) y actualiza el sistema operativo Windows.
+#              Al final genera un informe por servidor.
+# Uso:
+#   ansible-playbook -i inventory/hosts.ini playbook.yml
+# Requisitos en el NODO CONTROL (Linux/macOS desde donde corres Ansible):
+#   - pip install "pywinrm>=0.4.0"
+#   - ansible-galaxy collection install ansible.windows
+# Requisitos en cada SERVIDOR WINDOWS destino:
+#   - WinRM habilitado y configurado (HTTPS recomendado)
+#   - PowerShell 5.1+ / .NET 4.x
+#   - Usuario con privilegios administrativos
+# =============================================================================
+
+- name: Mantenimiento y validación de servidores Windows
+  hosts: windows_servers
+  gather_facts: true
+
+  vars:
+    # ---------------------------------------------------------------------
+    # Variables configurables
+    # ---------------------------------------------------------------------
+    # Lista de servicios críticos a verificar (ajustar según el entorno)
+    critical_services:
+      - wuauserv     # Windows Update
+      - W32Time      # Hora de Windows
+      - Spooler      # Cola de impresión (ejemplo, ajustar a servicios reales)
+      - Dnscache     # Cliente DNS
+
+    # Umbral mínimo de espacio libre en C:\ (%) para considerarlo "OK"
+    min_disk_free_percent: 10
+
+    # Umbrales para el healthcheck de la VM
+    max_cpu_load_percent: 90
+    min_memory_free_percent: 10
+
+    # Categorías de actualizaciones de Windows Update a instalar
+    update_categories:
+      - SecurityUpdates
+      - CriticalUpdates
+      - UpdateRollups
+
+    # Carpeta local (nodo control) donde se guardan los informes
+    local_report_dir: "./reportes_windows"
+
+    # Ruta remota donde se deja copia del informe
+    remote_report_path: "C:\\Temp\\informe_mantenimiento_{{ inventory_hostname }}.txt"
+
+  tasks:
+
+    # =========================================================================
+    # 0. Fecha/hora de ejecución (evita depender de facts no siempre disponibles)
+    # =========================================================================
+    - name: "0. Obtener fecha y hora de ejecución"
+      ansible.windows.win_shell: "(Get-Date).ToString('yyyy-MM-dd HH:mm:ss')"
+      register: exec_date
+      changed_when: false
+
+    - name: "0. Asegurar que exista la carpeta C:\\Temp"
+      ansible.windows.win_file:
+        path: "C:\\Temp"
+        state: directory
+
+    # =========================================================================
+    # 1. VALIDAR ESPACIO EN DISCO (C:\)
+    # =========================================================================
+    - name: "1. Consultar tamaño y espacio libre de C:\\"
+      ansible.windows.win_shell: >
+        Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" |
+        Select-Object Size, FreeSpace | ConvertTo-Json -Compress
+      register: disk_raw
+      changed_when: false
+
+    - name: "1. Procesar información de disco"
+      ansible.builtin.set_fact:
+        disk_info: "{{ disk_raw.stdout | from_json }}"
+
+    - name: "1. Calcular espacio en GB y porcentaje libre"
+      ansible.builtin.set_fact:
+        disk_total_gb: "{{ (disk_info.Size | float / 1024 / 1024 / 1024) | round(2) }}"
+        disk_available_gb: "{{ (disk_info.FreeSpace | float / 1024 / 1024 / 1024) | round(2) }}"
+        disk_free_percent: "{{ ((disk_info.FreeSpace | float) / (disk_info.Size | float) * 100) | round(2) }}"
+
+    - name: "1. Determinar si el espacio en disco es adecuado"
+      ansible.builtin.set_fact:
+        disk_ok: "{{ (disk_free_percent | float) >= (min_disk_free_percent | float) }}"
+
+    - name: "1. Mostrar advertencia si el espacio es bajo"
+      ansible.builtin.debug:
+        msg: >
+          ALERTA: espacio libre en C:\ es {{ disk_free_percent }}%,
+          por debajo del umbral mínimo de {{ min_disk_free_percent }}%
+      when: not disk_ok
+
+    # =========================================================================
+    # 2. VERIFICAR SERVICIOS CRÍTICOS
+    # =========================================================================
+    - name: "2. Consultar estado de cada servicio crítico"
+      ansible.windows.win_service_info:
+        name: "{{ item }}"
+      register: service_query
+      loop: "{{ critical_services }}"
+
+    - name: "2. Construir diccionario de estado por servicio"
+      ansible.builtin.set_fact:
+        services_status: "{{ services_status | default({}) | combine({item.item: (item.services[0].state | default('no encontrado'))}) }}"
+      loop: "{{ service_query.results }}"
+
+    - name: "2. Mostrar advertencia por servicio crítico no activo"
+      ansible.builtin.debug:
+        msg: "ALERTA: el servicio '{{ item.key }}' está en estado '{{ item.value }}'"
+      loop: "{{ services_status | dict2items }}"
+      when: item.value != "started" and item.value != "running"
+
+    # =========================================================================
+    # 3. HEALTHCHECK DE LA VM (CPU, memoria, uptime, reinicio pendiente)
+    # =========================================================================
+    - name: "3. Consultar métricas de CPU, memoria y uptime"
+      ansible.windows.win_shell: >
+        $os = Get-CimInstance Win32_OperatingSystem;
+        $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average;
+        $uptime = (Get-Date) - $os.LastBootUpTime;
+        [PSCustomObject]@{
+          CpuLoadPercent   = $cpu
+          TotalMemoryKB    = $os.TotalVisibleMemorySize
+          FreeMemoryKB     = $os.FreePhysicalMemory
+          LastBootUpTime   = $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')
+          UptimeDays       = [math]::Round($uptime.TotalDays, 2)
+        } | ConvertTo-Json -Compress
+      register: health_raw
+      changed_when: false
+
+    - name: "3. Procesar métricas de salud de la VM"
+      ansible.builtin.set_fact:
+        health_info: "{{ health_raw.stdout | from_json }}"
+
+    - name: "3. Calcular porcentaje de memoria libre"
+      ansible.builtin.set_fact:
+        mem_free_percent: "{{ ((health_info.FreeMemoryKB | float) / (health_info.TotalMemoryKB | float) * 100) | round(2) }}"
+
+    - name: "3. Verificar si hay un reinicio pendiente"
+      ansible.windows.win_reboot_pending:
+      register: reboot_pending
+
+    - name: "3. Determinar estado general de salud de la VM"
+      ansible.builtin.set_fact:
+        vm_healthy: >-
+          {{ (health_info.CpuLoadPercent | default(0) | float) <= (max_cpu_load_percent | float)
+             and (mem_free_percent | float) >= (min_memory_free_percent | float) }}
+
+    - name: "3. Mostrar advertencia si la VM no está saludable"
+      ansible.builtin.debug:
+        msg: >
+          ALERTA: CPU {{ health_info.CpuLoadPercent }}% / Memoria libre {{ mem_free_percent }}%
+          (umbrales: CPU máx {{ max_cpu_load_percent }}%, memoria mín {{ min_memory_free_percent }}%)
+      when: not vm_healthy
+
+    # =========================================================================
+    # 4. ACTUALIZAR EL SISTEMA OPERATIVO
+    # =========================================================================
+    - name: "4. Instalar actualizaciones de Windows Update"
+      ansible.windows.win_updates:
+        category_names: "{{ update_categories }}"
+        state: installed
+        reboot: false          # el reinicio se gestiona aparte, en ventana controlada
+      register: system_update
+
+    # =========================================================================
+    # 5. GENERAR INFORME DE RESULTADOS
+    # =========================================================================
+    - name: "5. Renderizar informe en el host remoto"
+      ansible.windows.win_template:
+        src: templates/report.j2
+        dest: "{{ remote_report_path }}"
+
+    - name: "5. Crear carpeta local para informes en el nodo control"
+      ansible.builtin.file:
+        path: "{{ local_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+
+    - name: "5. Descargar el informe al nodo control"
+      ansible.builtin.fetch:
+        src: "{{ remote_report_path }}"
+        dest: "{{ local_report_dir }}/informe_{{ inventory_hostname }}.txt"
+        flat: true
+
+    - name: "5. Mostrar resumen final en pantalla"
+      ansible.builtin.debug:
+        msg:
+          - "===== INFORME {{ inventory_hostname }} ====="
+          - "Disco (C:\\): {{ disk_available_gb }} GB libres de {{ disk_total_gb }} GB ({{ disk_free_percent }}% libre) -> {{ 'OK' if disk_ok else 'ALERTA' }}"
+          - "Servicios: {{ services_status }}"
+          - "Healthcheck VM: CPU {{ health_info.CpuLoadPercent }}% / Memoria libre {{ mem_free_percent }}% / Uptime {{ health_info.UptimeDays }} días -> {{ 'SALUDABLE' if vm_healthy else 'ALERTA' }}"
+          - "Reinicio pendiente: {{ 'SI' if reboot_pending.reboot_required else 'NO' }}"
+          - "Actualización SO: {{ 'OK, actualizaciones instaladas=' + (system_update.updates | default({}) | length | string) if system_update is succeeded else 'ERROR' }}"
+          - "Informe completo guardado en: {{ local_report_dir }}/informe_{{ inventory_hostname }}.txt"
