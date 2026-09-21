@@ -176,7 +176,7 @@
     # =========================================================================
     - name: "5. Renderizar informe en el host remoto"
       ansible.windows.win_template:
-        src: templates/report.j2
+        src: template/report.j2
         dest: "{{ remote_report_path }}"
 
     - name: "5. Crear carpeta local para informes en el nodo control"
