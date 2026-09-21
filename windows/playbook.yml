@@ -144,7 +144,7 @@
 
     - name: "3. Verificar si hay un reinicio pendiente"
       ansible.windows.win_reboot_pending:
-      register: reboot_pending
+        register: reboot_pending
 
     - name: "3. Determinar estado general de salud de la VM"
       ansible.builtin.set_fact:
