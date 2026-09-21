@@ -199,6 +199,6 @@
           - "Disco (C:\\): {{ disk_available_gb }} GB libres de {{ disk_total_gb }} GB ({{ disk_free_percent }}% libre) -> {{ 'OK' if disk_ok else 'ALERTA' }}"
           - "Servicios: {{ services_status }}"
           - "Healthcheck VM: CPU {{ health_info.CpuLoadPercent }}% / Memoria libre {{ mem_free_percent }}% / Uptime {{ health_info.UptimeDays }} días -> {{ 'SALUDABLE' if vm_healthy else 'ALERTA' }}"
-          - "Reinicio pendiente: {{ 'SI' if reboot_pending.reboot_required else 'NO' }}"
+          - "Reinicio pendiente: {{ 'SI' if update_result.reboot_required else 'NO' }}"
           - "Actualización SO: {{ 'OK, actualizaciones instaladas=' + (system_update.updates | default({}) | length | string) if system_update is succeeded else 'ERROR' }}"
           - "Informe completo guardado en: {{ local_report_dir }}/informe_{{ inventory_hostname }}.txt"
