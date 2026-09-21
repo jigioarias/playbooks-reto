@@ -23,7 +23,7 @@
    Memoria libre     : {{ mem_free_percent }}%  (umbral minimo: {{ min_memory_free_percent }}%)
    Ultimo arranque   : {{ health_info.LastBootUpTime }}
    Uptime            : {{ health_info.UptimeDays }} dias
-   Reinicio pendiente: {{ 'SI' if reboot_pending.reboot_required else 'NO' }}
+   Reinicio pendiente: {{ 'SI' if update_result.get('reboot_required', false) else 'NO' }}
    Estado general    : {{ 'SALUDABLE' if vm_healthy else 'ALERTA - REVISAR RECURSOS' }}
 
 4) ACTUALIZACION DEL SISTEMA OPERATIVO
