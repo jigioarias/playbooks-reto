@@ -1,0 +1,35 @@
+==============================================================
+ INFORME DE MANTENIMIENTO - {{ inventory_hostname }}
+ Fecha de ejecución: {{ ansible_date_time.iso8601 }}
+ Sistema operativo: {{ ansible_distribution }} {{ ansible_distribution_version }}
+==============================================================
+
+1) ESPACIO EN DISCO (partición raíz /)
+--------------------------------------------------------------
+   Tamaño total     : {{ disk_total_gb }} GB
+   Espacio disponible: {{ disk_available_gb }} GB
+   Porcentaje libre : {{ disk_free_percent }}%
+   Umbral mínimo    : {{ min_disk_free_percent }}%
+   Estado           : {{ 'OK' if disk_ok else 'ALERTA - ESPACIO BAJO' }}
+
+2) SERVICIOS CRÍTICOS
+--------------------------------------------------------------
+{% for svc, estado in services_status.items() %}
+   - {{ svc }}: {{ estado | upper }}
+{% endfor %}
+
+3) CREACIÓN DE USUARIO
+--------------------------------------------------------------
+   Usuario objetivo : {{ new_user }}
+   Resultado tarea  : {{ 'creado / ya existente (OK)' if user_creation is succeeded else 'ERROR' }}
+   Verificación (id): {{ user_check.stdout | default('N/D') }}
+
+4) ACTUALIZACIÓN DEL SISTEMA OPERATIVO
+--------------------------------------------------------------
+   Resultado        : {{ 'OK - actualización aplicada correctamente' if system_update is succeeded else 'ERROR EN LA ACTUALIZACIÓN' }}
+   ¿Hubo cambios?   : {{ system_update.changed }}
+   Reinicio pendiente: {{ 'SI' if reboot_required_file.stat.exists | default(false) else 'NO / No verificable' }}
+
+==============================================================
+ FIN DEL INFORME
+==============================================================

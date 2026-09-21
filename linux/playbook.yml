@@ -1,0 +1,155 @@
+---
+# =============================================================================
+# Playbook: mantenimiento_rhel.yml
+# Descripción: Valida espacio en disco, verifica servicios críticos,
+#              crea el usuario 'ecuador' y actualiza el sistema operativo
+#              en servidores RedHat Linux. Al final genera un informe.
+# Uso:
+#   ansible-playbook -i inventory/hosts.ini playbook.yml
+#   ansible-playbook -i inventory/hosts.ini playbook.yml --check   (modo simulación)
+# Requisitos:
+#   - Ansible >= 2.14
+#   - Acceso privilegiado (become: yes) en los hosts destino
+#   - Colección community.general (opcional, no se usa por defecto)
+# =============================================================================
+
+- name: Mantenimiento y validación de servidores RHEL
+  hosts: rhel_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    # ---------------------------------------------------------------------
+    # Variables configurables
+    # ---------------------------------------------------------------------
+    # Lista de servicios críticos a verificar (ajustar según el entorno)
+    critical_services:
+      - sshd
+      - firewalld
+      - chronyd
+
+    # Usuario que se debe crear
+    new_user: ecuador
+    new_user_shell: /bin/bash
+    new_user_groups: []          # ej. ["wheel"] si necesita sudo
+    new_user_create_home: true
+
+    # Umbral mínimo de espacio libre en la raíz (%) para considerarlo "OK"
+    min_disk_free_percent: 10
+
+    # Carpeta local (en el nodo control) donde se guardan los informes
+    local_report_dir: "./reportes"
+
+    # Carpeta remota donde se deja una copia del informe
+    remote_report_path: "/tmp/informe_mantenimiento_{{ inventory_hostname }}.txt"
+
+  tasks:
+
+    # =========================================================================
+    # 1. VALIDAR ESPACIO EN DISCO (partición raíz)
+    # =========================================================================
+    - name: "1. Obtener información de la partición raíz (/)"
+      ansible.builtin.set_fact:
+        root_mount: "{{ ansible_facts.mounts | selectattr('mount', 'equalto', '/') | list | first }}"
+
+    - name: "1. Calcular porcentaje de espacio libre en /"
+      ansible.builtin.set_fact:
+        disk_free_percent: "{{ ((root_mount.size_available | float) / (root_mount.size_total | float) * 100) | round(2) }}"
+        disk_total_gb: "{{ (root_mount.size_total | float / 1024 / 1024 / 1024) | round(2) }}"
+        disk_available_gb: "{{ (root_mount.size_available | float / 1024 / 1024 / 1024) | round(2) }}"
+
+    - name: "1. Determinar si el espacio en disco es adecuado"
+      ansible.builtin.set_fact:
+        disk_ok: "{{ (disk_free_percent | float) >= (min_disk_free_percent | float) }}"
+
+    - name: "1. Mostrar advertencia si el espacio es bajo"
+      ansible.builtin.debug:
+        msg: >
+          ALERTA: espacio libre en / es {{ disk_free_percent }}%,
+          por debajo del umbral mínimo de {{ min_disk_free_percent }}%
+      when: not disk_ok
+
+    # =========================================================================
+    # 2. VERIFICAR SERVICIOS CRÍTICOS
+    # =========================================================================
+    - name: "2. Recolectar el estado de todos los servicios (systemd)"
+      ansible.builtin.service_facts:
+
+    - name: "2. Construir diccionario de estado por cada servicio crítico"
+      ansible.builtin.set_fact:
+        services_status: "{{ services_status | default({}) | combine({item: ansible_facts.services[item + '.service'].state | default('no encontrado')}) }}"
+      loop: "{{ critical_services }}"
+
+    - name: "2. Mostrar advertencia por servicio crítico no activo"
+      ansible.builtin.debug:
+        msg: "ALERTA: el servicio '{{ item.key }}' está en estado '{{ item.value }}'"
+      loop: "{{ services_status | dict2items }}"
+      when: item.value != "running"
+
+    # =========================================================================
+    # 3. CREAR USUARIO 'ecuador'
+    # =========================================================================
+    - name: "3. Crear (o asegurar) el usuario {{ new_user }}"
+      ansible.builtin.user:
+        name: "{{ new_user }}"
+        shell: "{{ new_user_shell }}"
+        groups: "{{ new_user_groups }}"
+        create_home: "{{ new_user_create_home }}"
+        state: present
+      register: user_creation
+
+    - name: "3. Confirmar existencia del usuario tras la tarea"
+      ansible.builtin.command: "id {{ new_user }}"
+      register: user_check
+      changed_when: false
+
+    # =========================================================================
+    # 4. ACTUALIZAR EL SISTEMA OPERATIVO
+    # =========================================================================
+    # Nota: dnf aplica en RHEL 8/9. Si el objetivo es RHEL 7, cambiar el módulo
+    # 'ansible.builtin.dnf' por 'ansible.builtin.yum' (misma sintaxis de parámetros).
+    - name: "4. Actualizar todos los paquetes del sistema"
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest          # noqa package-latest
+        update_cache: true
+      register: system_update
+
+    - name: "4. Verificar si el sistema requiere reinicio (kernel actualizado)"
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+      ignore_errors: true
+
+    # =========================================================================
+    # 5. GENERAR INFORME DE RESULTADOS
+    # =========================================================================
+    - name: "5. Renderizar informe en el host remoto"
+      ansible.builtin.template:
+        src: templates/report.j2
+        dest: "{{ remote_report_path }}"
+        mode: "0644"
+
+    - name: "5. Crear carpeta local para informes en el nodo control"
+      ansible.builtin.file:
+        path: "{{ local_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: false
+
+    - name: "5. Descargar el informe al nodo control"
+      ansible.builtin.fetch:
+        src: "{{ remote_report_path }}"
+        dest: "{{ local_report_dir }}/informe_{{ inventory_hostname }}.txt"
+        flat: true
+
+    - name: "5. Mostrar resumen final en pantalla"
+      ansible.builtin.debug:
+        msg:
+          - "===== INFORME {{ inventory_hostname }} ====="
+          - "Disco (/): {{ disk_available_gb }} GB libres de {{ disk_total_gb }} GB ({{ disk_free_percent }}% libre) -> {{ 'OK' if disk_ok else 'ALERTA' }}"
+          - "Servicios: {{ services_status }}"
+          - "Usuario '{{ new_user }}': {{ 'creado/OK' if user_creation is succeeded else 'ERROR' }}"
+          - "Actualización SO: {{ 'aplicada, cambios=' + (system_update.changed | string) if system_update is succeeded else 'ERROR' }}"
+          - "Informe completo guardado en: {{ local_report_dir }}/informe_{{ inventory_hostname }}.txt"
