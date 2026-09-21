@@ -142,9 +142,11 @@
       ansible.builtin.set_fact:
         mem_free_percent: "{{ ((health_info.FreeMemoryKB | float) / (health_info.TotalMemoryKB | float) * 100) | round(2) }}"
 
-    - name: "3. Verificar si hay un reinicio pendiente"
-      ansible.windows.win_reboot_pending:
-        register: reboot_pending
+    - name: Verificar si hay reinicio pendiente
+      ansible.windows.win_updates:
+        state: searched
+      register: update_result
+
 
     - name: "3. Determinar estado general de salud de la VM"
       ansible.builtin.set_fact:
