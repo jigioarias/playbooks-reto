@@ -14,7 +14,7 @@
 # =============================================================================
 
 - name: Mantenimiento y validación de servidores RHEL
-  hosts: rhel_servers
+  hosts: aws_ec2
   become: true
   gather_facts: true
 
