@@ -1,0 +1,38 @@
+==============================================================
+ INFORME DE MANTENIMIENTO - {{ inventory_hostname }}
+ Fecha de ejecucion: {{ exec_date.stdout | trim }}
+==============================================================
+
+1) ESPACIO EN DISCO (C:\)
+--------------------------------------------------------------
+   Tamano total      : {{ disk_total_gb }} GB
+   Espacio disponible: {{ disk_available_gb }} GB
+   Porcentaje libre  : {{ disk_free_percent }}%
+   Umbral minimo     : {{ min_disk_free_percent }}%
+   Estado            : {{ 'OK' if disk_ok else 'ALERTA - ESPACIO BAJO' }}
+
+2) SERVICIOS CRITICOS
+--------------------------------------------------------------
+{% for svc, estado in services_status.items() %}
+   - {{ svc }}: {{ estado | upper }}
+{% endfor %}
+
+3) HEALTHCHECK DE LA VM
+--------------------------------------------------------------
+   Uso de CPU        : {{ health_info.CpuLoadPercent }}%  (umbral maximo: {{ max_cpu_load_percent }}%)
+   Memoria libre     : {{ mem_free_percent }}%  (umbral minimo: {{ min_memory_free_percent }}%)
+   Ultimo arranque   : {{ health_info.LastBootUpTime }}
+   Uptime            : {{ health_info.UptimeDays }} dias
+   Reinicio pendiente: {{ 'SI' if reboot_pending.reboot_required else 'NO' }}
+   Estado general    : {{ 'SALUDABLE' if vm_healthy else 'ALERTA - REVISAR RECURSOS' }}
+
+4) ACTUALIZACION DEL SISTEMA OPERATIVO
+--------------------------------------------------------------
+   Categorias aplicadas: {{ update_categories | join(', ') }}
+   Resultado           : {{ 'OK - proceso de actualizacion completado' if system_update is succeeded else 'ERROR EN LA ACTUALIZACION' }}
+   Actualizaciones instaladas: {{ system_update.updates | default({}) | length }}
+   Reinicio requerido tras actualizar: {{ 'SI' if system_update.reboot_required | default(false) else 'NO' }}
+
+==============================================================
+ FIN DEL INFORME
+==============================================================
